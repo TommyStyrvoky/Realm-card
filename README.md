@@ -1,5 +1,5 @@
 # Realm-card
-A compact ESP32 TFT display/lipo charge circuit prop that loops through animations stored in folders on µSD card attached to PCB. Estimated battery life is ~2 hours.
+A compact ESP32 TFT display/lipo charge circuit prop that loops through animations stored in folders on µSD card attached to PCB. Estimated battery life is ~10 hours.
 
 See Adafruit BOM for additional components needed for the electronics aside from PCB, these were purchased through Adafruit's store, Digi-Key, and Mouser Electronics.
 The ESP32 QT-PY will need to be soldered flush onto pads on the PCB, the throughholes are provided for alighment, this should be mounted flush, see assembly directory for photos.
