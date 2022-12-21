@@ -2143,7 +2143,7 @@
     (property "Datasheet" "http://www.ti.com/lit/ds/symlink/lm809.pdf" (id 3) (at 125.73 132.08 0)
       (effects (font (size 1.27 1.27)) hide)
     )
-    (property "LCSC" "C155243" (id 5) (at 118.11 134.62 0)
+    (property "LCSC" "C9965" (id 5) (at 118.11 134.62 0)
       (effects (font (size 1.27 1.27)) hide)
     )
     (pin "1" (uuid 5ed0c1ac-4012-488d-b27d-13ed0297b922))
