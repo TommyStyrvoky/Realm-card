@@ -1,20 +1,19 @@
-
 #include "SPI.h"
-#include <SD.h>
+#include "SdFat.h"  // use Adafruit branch, sd card needs to be formatted to FAT16/FAT/32 with 32kb chunks
 #include "Adafruit_ILI9341.h"
-#include <Adafruit_GFX.h>
-#include <stdint.h>
+#include "Adafruit_ImageReader.h"
+#include "Adafruit_GFX.h"
 #include "TouchScreen.h"
 
 //pins
-#define TFT_DC 7
-#define TFT_CS 5
-#define SD_CS 4
+#define TFT_DC RX
+#define TFT_CS SCL
+#define SD_CS SDA
 #define YM A0
 #define YP A1
 #define XM A3
 #define XP A2
-#define batteryStatus A6
+#define batteryStatus TX
 
 //touchscreen remapping needs to be calibrated
 #define TS_MINX 150
@@ -23,11 +22,6 @@
 #define TS_MAXY 900
 
 #define touchscreenResistanceX 328  //measure this to calibrate
-
-TouchScreen ts = TouchScreen(XP, YP, XM, YM, touchscreenResistanceX);
-Adafruit_ILI9341 tft = Adafruit_ILI9341(TFT_CS, TFT_DC);
-
-File root;
 
 //GUI elements
 #define triangleWidth 20
@@ -40,52 +34,69 @@ File root;
 #define lTriangleX 30
 #define rTriangleX 210
 
-PROGMEM uint16_t bitmapBuffer[320][240];
-
 // timing variables
-float frameRate = 15;
+float frameRate = 24;
+#define minDelay 500
+#define maxDelay 3000
 #define touchCoolDown 3000
 #define debounce 250
+uint maxFrames 12  //anything beyond 12 frames of 240X320 overfills ram
 
-// global variables
-uint x, y;
-unsigned long currentFrame, lastFrameDraw, lastTouchEvent, lastpress;
-unsigned long currentDirectory = 1, selectedDirectory = 1;//directory 0 = system
-#define strBuffer 64
-#define folderListCT 128
-char fileName[strBuffer];
-char folderList[folderListCT][strBuffer];
-unsigned long frameCount[folderListCT];
+  // global variables
+  uint x,
+  y;
+unsigned long currentFrame, lastFrameDraw, lastTouchEvent, lastpress, delayTime, lastDelay;
+unsigned long currentDirectory = 1, selectedDirectory = 1;  //directory 0 = system
+#define strBufferSize 64                                    //max directory name length
+#define folderListCT 256                                    // max number of directories
+char fileName[strBufferSize];
+char folderList[folderListCT][strBufferSize];
 uint folderCount;
-bool uIActiveFlag;
-bool nextFrameFlag;
-bool debounceFlag;
-char extension[]= ".bmp";
+bool uIActiveFlag, debounceFlag, delayFlag, delayAnimation = true;
+char extension[] = ".bmp";
 #define textTrunc 8
+#define SD_MHZ 25
 
-void setup() {
-  Serial.begin(9600);
+// classes
+SdFat SD;
+SdFile root;
+SdFile directory;
+TouchScreen ts = TouchScreen(XP, YP, XM, YM, touchscreenResistanceX);
+Adafruit_ILI9341 tft = Adafruit_ILI9341(TFT_CS, TFT_DC);
+Adafruit_ImageReader reader(SD);
+Adafruit_Image img[maxFrames];
+
+
+int32_t width = 0, height = 0;
+
+void setup() {  //first loop
+  Serial.begin(115200);
   pinMode(batteryStatus, INPUT);
+  if (!SD.begin(SD_CS, SD_SCK_MHZ(SD_MHZ))) {  //throw sd error
+    tft.fillScreen(0);                         //load screen here
+    while (true) {}                            //do nothing
+  }
   tft.begin();
-  tft.fillScreen(0);
-  SD.begin(SD_CS);
-  root = SD.open("/");
-  root.rewindDirectory();
-  while (true) {
-    File directory = root.openNextFile();
-    if (!directory) {
-      break;
-    }
-    if (directory.isDirectory()) {
-      strcpy(folderList[folderCount], directory.name());
-      frameCount[folderCount] = getfileCount(directory);
+  tft.fillScreen(0);  //load screen here
+
+  root.open("/");
+  SD.vwd()->rewind();
+  while (directory.openNext(&root, O_RDONLY)) {  //read all of the directories on the sd card and store their names to memory
+    if (directory.isDir()) {
+      directory.printName(&Serial);
+      directory.getName(folderList[folderCount], strBufferSize);
       folderCount++;
     }
     directory.close();
   }
+  tft.fillScreen(0);  //end load screen
+
+  currentFrame = 0;
+  currentDirectory = 1;
+  loadFrames();
 }
 
-void loop() {
+void loop() {                 //main
   TSPoint p = ts.getPoint();  //touchscreen events
   if (p.z > ts.pressureThreshhold) {
     y = map(p.x, TS_MINX, TS_MAXX, tft.height(), 0);
@@ -94,31 +105,35 @@ void loop() {
     lastTouchEvent = millis();
   }
 
-  if ((millis() - lastTouchEvent >= touchCoolDown) && uIActiveFlag) {  //hide UI if not active
+  if ((millis() - lastTouchEvent >= touchCoolDown) && uIActiveFlag) {  //hide UI if not active and load next frame set if changed
     uIActiveFlag = false;
-    currentDirectory = selectedDirectory;
-    currentFrame = 0;
-    nextFrameFlag = false;
+    if (currentDirectory != selectedDirectory) {
+      currentDirectory = selectedDirectory;
+      currentFrame = 0;
+    }
+    loadFrames();
     //TODO reset frame counter and set selected directory as active. Get frame count of new sequence
   }
-  if (millis() - lastpress >= debounce) {
-    debounceFlag = false;    
+
+  if (millis() - lastpress >= debounce) {  //set debounce flag false after elapsed
+    debounceFlag = false;
   }
 
-  if (millis() - lastFrameDraw >= (1 / frameRate) * 1000) {  //draw next frame
-    //TODO read file function to bitmap array
-    //tft.drawRGBBitmap(0,0,bitMap,tft.width(),tft.height())
-    nextFrameFlag = true;
-    tft.fillScreen(0);
+  if (millis() - lastDelay >= delayTime) {  //set delay flag false after elapsed
+    delayFlag = false;
+  }
+
+  if (millis() - lastFrameDraw >= (1 / frameRate) * 1000) {  //draw frame from ram every frame interval and update display
     lastFrameDraw = millis();
-    if (uIActiveFlag) {  //draw UI
-      if (!debounceFlag) {
+    playFrame();
+    if (uIActiveFlag) {               //draw UI
+      if (!debounceFlag) {            //debounce inputs
         if ((x > 0) && (x < (50))) {  //left button pressed
           if ((y > 0) && (y <= 50)) {
             if (p.z > ts.pressureThreshhold) {
               selectedDirectory--;
               if (selectedDirectory < 1) {
-                selectedDirectory = folderCount-1;
+                selectedDirectory = folderCount - 1;
               }
               debounceFlag = true;
               lastpress = millis();
@@ -131,7 +146,7 @@ void loop() {
           if ((y > 0) && (y <= 50)) {
             if (p.z > ts.pressureThreshhold) {
               selectedDirectory++;
-              if (selectedDirectory > folderCount-1) {
+              if (selectedDirectory > folderCount - 1) {
                 selectedDirectory = 1;
               }
               debounceFlag = true;
@@ -149,187 +164,54 @@ void loop() {
       //draw text
       tft.setTextColor(ILI9341_WHITE);
       tft.setTextSize(textSize);
-      uint length = strlen(folderList[selectedDirectory]);
-      if (length > textTrunc) {
-        tft.setCursor(tft.width() / 2 - textTrunc / 2 * textSize * textWidth, textHeightOffset);
-        char sub[textTrunc];
-        strncpy(sub, folderList[selectedDirectory], textTrunc);
-        tft.println(sub);
-      } else {
-        tft.setCursor(tft.width() / 2 - length / 2 * textSize * textWidth, textHeightOffset);
-        tft.println(folderList[selectedDirectory]);
-      }
-
       tft.setTextSize(2);
       tft.setCursor(0, 150);
       tft.println(x);
       tft.setCursor(0, 165);
       tft.println(y);
-      tft.setCursor(0, 180);
-      tft.println(selectedDirectory);
-      tft.setCursor(0, 195);
-      tft.println(frameCount[selectedDirectory]);
-      //draw text
       //TODO draw battery %
-      //TODO add calibration code
-    }
-  } else {
-    if (nextFrameFlag) {
-      //TODO queue next frame here to memory
-      char dirBuffer[64];
-      strcat(dirBuffer,folderList[currentDirectory]);
-      strcat(dirBuffer,"/");
-
-      char byteArray[4];
-      byteArray[0] = (int)((currentFrame >> 24) & 0xFF) ;
-      byteArray[1] = (int)((currentFrame >> 16) & 0xFF) ;
-      byteArray[2] = (int)((currentFrame >> 8) & 0XFF);
-      byteArray[3] = (int)((currentFrame & 0XFF));
-
-      strcat(dirBuffer,byteArray);
-      strcat(dirBuffer,extension);
-      readBMP(dirBuffer);
-      currentFrame++;
-      nextFrameFlag = false;
     }
   }
 }
 
-unsigned long getfileCount(File dir) {
-  unsigned long entryCount;
-  dir.rewindDirectory();
-  while (true) {
-    File entry = dir.openNextFile();
-    if (!entry) {
-      break;
-    }
-    entryCount++;
-    entry.close();
+
+
+void loadFrames() {  //loads frames into memory from sdcard
+  ImageReturnCode stat;
+  char directory[strBufferSize];
+  strcat(directory, "/");
+  strcat(directory, folderList[currentDirectory]);
+  strcat(directory, "/");
+
+  Serial.println(folderList[currentDirectory]);
+  Serial.println(currentDirectory);
+  char buf[strBufferSize + strBufferSize + 10 + 4];
+  char frame[10];
+
+  for (unsigned long i = 0; i < maxFrames; i++) {  // TODO rework this to load as many images until there are no more images or ram space, and dynamically set max frames based on this
+    ltoa(i + 1, frame, 10);
+    strcpy(buf, directory);
+    strcat(buf, frame);
+    strcat(buf, extension);
+    stat = reader.loadBMP(buf, img[i]);
+    Serial.println(frame);
+    reader.printStatus(stat);
   }
-  return entryCount;
+  //TODO set framerate and Random wait logic somehow by using the directory naming structure
 }
 
-
-#define BUFFPIXEL 20
-//stuff from adafruit BMP draw example
-void readBMP(char *filename) {
-
-  File     bmpFile;
-  int      bmpWidth, bmpHeight;   // W+H in pixels
-  uint8_t  bmpDepth;              // Bit depth (currently must be 24)
-  uint32_t bmpImageoffset;        // Start of image data in file
-  uint32_t rowSize;               // Not always = bmpWidth; may have padding
-  uint8_t  sdbuffer[3*BUFFPIXEL]; // pixel in buffer (R+G+B per pixel)
-  //uint16_t lcdbuffer[BUFFPIXEL];  // pixel out buffer (16-bit per pixel)
-  uint8_t  buffidx = sizeof(sdbuffer); // Current position in sdbuffer
-  boolean  goodBmp = false;       // Set to true on valid header parse
-  boolean  flip    = true;        // BMP is stored bottom-to-top
-  int      w, h, row, col;
-  uint8_t  r, g, b;
-  uint32_t pos = 0, startTime = millis();
-  uint8_t  lcdidx = 0;
-  boolean  first = true;
-
-  // Open requested file on SD card
-  if (!SD.exists(filename)) {
-    return;
-  }
-  else{
-    bmpFile = SD.open(filename);
-  }
-  // Parse BMP header
-  if(read16(bmpFile) == 0x4D42) { // BMP signature
-    (void)read32(bmpFile); // Read & ignore creator bytes
-    bmpImageoffset = read32(bmpFile); // Start of image data
-    bmpWidth  = read32(bmpFile);
-    bmpHeight = read32(bmpFile);
-    if(read16(bmpFile) == 1) { // # planes -- must be '1'
-      bmpDepth = read16(bmpFile); // bits per pixel
-      if((bmpDepth == 24) && (read32(bmpFile) == 0)) { // 0 = uncompressed
-        goodBmp = true; // Supported BMP format -- proceed!
-        // BMP rows are padded (if needed) to 4-byte boundary
-        rowSize = (bmpWidth * 3 + 3) & ~3;
-        // If bmpHeight is negative, image is in top-down order.
-        // This is not canon but has been observed in the wild.
-        if(bmpHeight < 0) {
-          bmpHeight = -bmpHeight;
-          flip      = false;
-        }
-        // Crop area to be loaded
-        w = bmpWidth;
-        h = bmpHeight;
-        if((w-1) >= tft.width())  w = tft.width();
-        if((h-1) >= tft.height()) h = tft.height();
-
-        // Set TFT address window to clipped image bounds
-        //tft.setAddrWindow(x, y, x+w-1, y+h-1);
-
-        for (row=0; row<h; row++) { // For each scanline...
-          // Seek to start of scan line.  It might seem labor-
-          // intensive to be doing this on every line, but this
-          // method covers a lot of gritty details like cropping
-          // and scanline padding.  Also, the seek only takes
-          // place if the file position actually needs to change
-          // (avoids a lot of cluster math in SD library).
-          if(flip) // Bitmap is stored bottom-to-top order (normal BMP)
-            pos = bmpImageoffset + (bmpHeight - 1 - row) * rowSize;
-          else     // Bitmap is stored top-to-bottom
-            pos = bmpImageoffset + row * rowSize;
-          if(bmpFile.position() != pos) { // Need seek?
-            bmpFile.seek(pos);
-            buffidx = sizeof(sdbuffer); // Force buffer reload
-          }
-
-          for (col=0; col<w; col++) { // For each column...
-            // Time to read more pixel data?
-            if (buffidx >= sizeof(sdbuffer)) { // Indeed
-              // Push LCD buffer to the display first
-              if(lcdidx > 0) {
-                //tft.pushColors(lcdbuffer, lcdidx, first);
-                lcdidx = 0;
-                first  = false;
-              }
-              bmpFile.read(sdbuffer, sizeof(sdbuffer));
-              buffidx = 0; // Set index to beginning
-            }
-
-            // Convert pixel from BMP to TFT format
-            b = sdbuffer[buffidx++];
-            g = sdbuffer[buffidx++];
-            r = sdbuffer[buffidx++];
-            //lcdbuffer[lcdidx++] = tft.color565(r,g,b);
-            bitmapBuffer[row][col]=tft.color565(r,g,b);
-          } // end pixel
-        } // end scanline
-        // Write any remaining data to LCD
-        if(lcdidx > 0) {
-          //tft.pushColors(lcdbuffer, lcdidx, first);
-        } 
-        Serial.print(F("Loaded in "));
-        Serial.print(millis() - startTime);
-        Serial.println(" ms");
-      } // end goodBmp
+void playFrame() {  //indexes through frame objects
+  img[currentFrame].draw(tft, 0, 0);
+  if (currentFrame >= maxFrames) {
+    currentFrame = 0;
+    if (delayAnimation) {
+      delayFlag == true;
+      delayTime = random(minDelay, maxDelay);
+      lastDelay = millis();
     }
   }
-  bmpFile.close();
-}
-
-// These read 16- and 32-bit types from the SD card file.
-// BMP data is stored little-endian, Arduino is little-endian too.
-// May need to reverse subscript order if porting elsewhere.
-
-uint16_t read16(File f) {
-  uint16_t result;
-  ((uint8_t *)&result)[0] = f.read(); // LSB
-  ((uint8_t *)&result)[1] = f.read(); // MSB
-  return result;
-}
-
-uint32_t read32(File f) {
-  uint32_t result;
-  ((uint8_t *)&result)[0] = f.read(); // LSB
-  ((uint8_t *)&result)[1] = f.read();
-  ((uint8_t *)&result)[2] = f.read();
-  ((uint8_t *)&result)[3] = f.read(); // MSB
-  return result;
+  Serial.println(currentFrame);
+  if (!delayFlag) {
+    currentFrame++;
+  }
 }
