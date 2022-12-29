@@ -72,23 +72,22 @@ void setup() {  //first loop
   pinMode(batteryStatus, INPUT);
   tft.begin();
   if (!SD.begin(SD_CS, SD_SCK_MHZ(SD_MHZ))) {  //check sd card
-    tft.fillScreen(0);         
+    tft.fillScreen(0);
     tft.setTextColor(ILI9341_RED);
     tft.setTextSize(textSize);
-    drawCenteredText("SD Card",120,160-12);
-    drawCenteredText("not detected",120,160+12);
-    while (true) {}                            //do nothing
+    drawCenteredText("SD Card", 120, 160 - 12);
+    drawCenteredText("not detected", 120, 160 + 12);
+    while (true) {}  //do nothing
   }
   tft.fillScreen(0);  //load screen here
   tft.setTextColor(ILI9341_WHITE);
   tft.setTextSize(textSize);
-  drawCenteredText("Reading",120,160-12);
-  drawCenteredText("card.",120,160+12);
+  drawCenteredText("Reading", 120, 160 - 12);
+  drawCenteredText("card.", 120, 160 + 12);
   root.open("/");
   SD.vwd()->rewind();
   while (directory.openNext(&root, O_RDONLY)) {  //read all of the directories on the sd card and store their names to memory
     if (directory.isDir()) {
-      directory.printName(&Serial);
       directory.getName(folderList[folderCount], strBufferSize);
       folderCount++;
     }
@@ -99,9 +98,9 @@ void setup() {  //first loop
   tft.fillScreen(0);  //end load screen
   tft.setTextColor(ILI9341_WHITE);
   tft.setTextSize(textSize);
-  drawCenteredText("Found",120,160-24);
-  drawCenteredText(folderCountChar,120,160);
-  drawCenteredText("animations.",120,160+24);
+  drawCenteredText("Found", 120, 160 - 24);
+  drawCenteredText(folderCountChar, 120, 160);
+  drawCenteredText("animations.", 120, 160 + 24);
   currentFrame = 0;
   currentDirectory = 1;
   delay(1000);
@@ -123,8 +122,7 @@ void loop() {                 //main
       currentDirectory = selectedDirectory;
       currentFrame = 0;
       loadFrames();
-    }
-    else{
+    } else {
       selectedDirectory = currentDirectory;
     }
   }
@@ -178,7 +176,7 @@ void loop() {                 //main
       //draw text
       tft.setTextColor(ILI9341_WHITE);
       tft.setTextSize(textSize);
-      drawCenteredText( folderList[selectedDirectory], 160,heightOffset+triangleWidth/2);
+      drawCenteredText(folderList[selectedDirectory], 160, heightOffset + triangleWidth / 2);
 
       tft.setCursor(0, 150);
       tft.println(x);
@@ -190,23 +188,26 @@ void loop() {                 //main
   }
 }
 
-void drawCenteredText(char* text,int px,int py){
+void drawCenteredText(char* text, int px, int py) {
   int16_t x1, y1;
   uint16_t w, h;
   tft.getTextBounds(text, 0, 0, &x1, &y1, &w, &h);
-  tft.setCursor((px-w/2), (py-h/2));
+  tft.setCursor((px - w / 2), (py - h / 2));
   tft.println(text);
 }
 
 void loadFrames() {  //loads frames into memory from sdcard
                      //TODO add loading screen stuff
-  char directory[strBufferSize];
-  strcat(directory, "/");
-  strcat(directory, folderList[currentDirectory]);
-  strcat(directory, "/");
+  char path[strBufferSize];
+  strcpy(path, folderList[currentDirectory]);
+  strcat(path, "/");
+  Serial.println("path");
+  Serial.println(path);
+  Serial.println();
+  Serial.println(folderList[currentDirectory]);
 
   ImageReturnCode stat;
-  char buf[strBufferSize + strBufferSize + 10 + 4];
+  char buffer[strBufferSize + strBufferSize + 10 + 4];
   char frameChar[10];
   unsigned long framesLoaded;
 
@@ -216,21 +217,22 @@ void loadFrames() {  //loads frames into memory from sdcard
   Serial.println("/");
   while (true) {  //keep loading frames if they exist or until no more memory can be allocated
     ltoa(framesLoaded + 1, frameChar, 10);
-    strcpy(buf, directory);
-    strcat(buf, frameChar);
-    strcat(buf, extension);
+    strcpy(buffer, path);
+     Serial.println(buffer);
+    strcat(buffer, frameChar);
+    strcat(buffer, extension);
     Serial.print("Frame: ");
     Serial.println(frameChar);
-    stat = reader.loadBMP(buf, img[framesLoaded]);
+    stat = reader.loadBMP(buffer, img[framesLoaded]);
     reader.printStatus(stat);
     if (stat != 0) {  //anything other than success
       break;
     }
     tft.fillScreen(0);
     tft.setTextSize(textSize);
-    drawCenteredText(folderList[currentDirectory],120,160-24);
-    drawCenteredText("loaded:",120,160);
-    drawCenteredText(frameChar,120,160+24);
+    drawCenteredText(folderList[currentDirectory], 120, 160 - 24);
+    drawCenteredText("loaded:", 120, 160);
+    drawCenteredText(frameChar, 120, 160 + 24);
     framesLoaded++;
   }
   if (framesLoaded >= maxFramesToLoad) {  //prevent overflow
@@ -244,7 +246,7 @@ void playFrame() {  //indexes through frame objects
   img[currentFrame].draw(tft, 0, 0);
   if (currentFrame >= maxFrames) {
     currentFrame = 0;
-    if (delayAnimation) {//sets random delay at end of sequence
+    if (delayAnimation) {  //sets random delay at end of sequence
       delayFlag == true;
       delayTime = random(minDelay, maxDelay);
       lastDelay = millis();
