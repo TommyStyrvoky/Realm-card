@@ -12,6 +12,8 @@ See Adafruit BOM for additional components needed for the electronics aside from
 The ESP32 QT-PY will need to be soldered flush onto pads on the PCB, the throughholes are provided for alighment, this should be mounted flush, see assembly directory for photos. Polyamide (Kapton) tape will be used in some areas to insulate the PCB's connections on the back side, for this purpose 0.25" tape was used this is not listed on the BOM. Also not included in the BOM is some strong double sided tape, reccomend a thinner tape for adhesion of the pcb and LCD to the printed parts for removal in the future if needed to change the battery.
 
 
+A couple revisions were made to the board than the photos that are attached, this removed some redundant components.
+
 Included are KiCAD files for the PCB, there is a custom footprint that was created for the Adafruit QT-PY included. A step and STL file are included for the enclosure.
 
 
@@ -36,7 +38,7 @@ Tamiya:
 
 XF-1 
 
-XF-12 
+X-12 
 
 panel line accent color black
 
