@@ -5,23 +5,26 @@
 #include "Adafruit_GFX.h"
 #include "TouchScreen.h"
 
+#define loadRandom true  // selects a random animation on reboot to load
+
 //pins
 #define TFT_DC RX
 #define TFT_CS SCL
 #define SD_CS SDA
-#define YM A0
-#define YP A1
-#define XM A3
-#define XP A2
+#define XM A0
+#define XP A1
+#define YM A3
+#define YP A2
 #define batteryStatus TX
 
-//touchscreen remapping needs to be calibrated
-#define TS_MINX 150
-#define TS_MINY 180
-#define TS_MAXX 920
-#define TS_MAXY 900
 
-#define touchscreenResistanceX 328  //measure this to calibrate
+#define touchscreenResistanceX 328  //measure this between x- & x+ with a multimeter to calibrate
+
+//touchscreen remapping needs to be calibrated using the touchscreen demo
+#define TS_MINY 190
+#define TS_MINX 90
+#define TS_MAXY 900
+#define TS_MAXX 890
 
 //GUI elements
 #define triangleWidth 20
@@ -33,25 +36,25 @@
 #define rTriangleX 210
 
 // timing variables
-float frameRate = 24;
-#define minDelay 500
+#define baseFrameRate 24
+float frameRate = baseFrameRate;
+#define minDelay 1000
 #define maxDelay 3000
-#define touchCoolDown 3000
-#define debounce 250
-#define maxFramesToLoad 48  //anything beyond 12 frames of 240X320 overfills ram, this is just a placeholder for the maximum frames that could be loaded at a lower resolution
-uint maxFrames = maxFramesToLoad;
+#define touchCoolDown 2000
+#define debounce 500
+#define maxFramesToLoad 256  //anything beyond 12 frames of 240X320 overfills ram, this is just a placeholder for the maximum frames that could be loaded at a lower resolution
+unsigned long framesLoaded;
 
 // global variables
-uint x,
-  y;
-unsigned long currentFrame, lastFrameDraw, lastTouchEvent, lastpress, delayTime, lastDelay;
+uint x, y;
+unsigned long currentFrame, lastFrameDraw, lastTouchEvent, lastpress, delayTime = random(minDelay, maxDelay), lastDelay;
 unsigned long currentDirectory = 1, selectedDirectory = 1;  //directory 0 = system
 #define strBufferSize 64                                    //max directory name length
 #define folderListCT 256                                    // max number of directories
 char fileName[strBufferSize];
 char folderList[folderListCT][strBufferSize];
 uint folderCount;
-bool uIActiveFlag, debounceFlag, delayFlag, delayAnimation = true;
+bool uIActiveFlag, debounceFlag, delayFlag, redrawFlag, loopAnimation;
 char extension[] = ".bmp";
 #define SD_MHZ 25
 
@@ -65,10 +68,11 @@ Adafruit_ImageReader reader(SD);
 Adafruit_Image img[maxFramesToLoad];
 
 
-int32_t width = 0, height = 0;
+int32_t width, height;
 
 void setup() {  //first loop
   Serial.begin(115200);
+  analogReadResolution(10);  //touch library requires 10 bit ADC
   pinMode(batteryStatus, INPUT);
   tft.begin();
   if (!SD.begin(SD_CS, SD_SCK_MHZ(SD_MHZ))) {  //check sd card
@@ -94,7 +98,8 @@ void setup() {  //first loop
     directory.close();
   }
   char folderCountChar[10];
-  ltoa(folderCount, folderCountChar, 10);
+  //folderCount--;
+  ltoa(folderCount-1, folderCountChar, 10);
   tft.fillScreen(0);  //end load screen
   tft.setTextColor(ILI9341_WHITE);
   tft.setTextSize(textSize);
@@ -102,7 +107,13 @@ void setup() {  //first loop
   drawCenteredText(folderCountChar, 120, 160);
   drawCenteredText("animations.", 120, 160 + 24);
   currentFrame = 0;
-  currentDirectory = 1;
+
+  if (loadRandom) {
+    currentDirectory = random(1, folderCount);
+  } else {
+    currentDirectory = 1;
+  }
+
   delay(1000);
   loadFrames();
 }
@@ -110,8 +121,11 @@ void setup() {  //first loop
 void loop() {                 //main
   TSPoint p = ts.getPoint();  //touchscreen events
   if (p.z > ts.pressureThreshhold) {
-    y = map(p.x, TS_MINX, TS_MAXX, tft.height(), 0);
-    x = map(p.y, TS_MAXY, TS_MINY, tft.width(), 0);
+    y = map(p.x, TS_MAXX,TS_MINX, tft.height(), 0);//flip x and y because of orientation of display
+    x = map(p.y, TS_MINY, TS_MAXY, tft.width(), 0);
+    if (!uIActiveFlag) {  //draw ui after first event detectd
+      redrawFlag = true;
+    }
     uIActiveFlag = true;
     lastTouchEvent = millis();
   }
@@ -131,14 +145,14 @@ void loop() {                 //main
     debounceFlag = false;
   }
 
-  if (millis() - lastDelay >= delayTime) {  //set delay flag false after elapsed
-    delayFlag = false;
-  }
-
   if (millis() - lastFrameDraw >= (1 / frameRate) * 1000) {  //draw frame from ram every frame interval and update display
     lastFrameDraw = millis();
-    playFrame();
-    if (uIActiveFlag) {               //draw UI
+    if (!uIActiveFlag) {  //fill with black before rendering samller images than display size
+      frameRate = baseFrameRate;
+      playFrame();
+    }
+
+    if (uIActiveFlag) {               //button events
       if (!debounceFlag) {            //debounce inputs
         if ((x > 0) && (x < (50))) {  //left button pressed
           if ((y > 0) && (y <= 50)) {
@@ -148,9 +162,8 @@ void loop() {                 //main
                 selectedDirectory = folderCount - 1;
               }
               debounceFlag = true;
+              redrawFlag = true;
               lastpress = millis();
-              tft.setCursor(0, 210);
-              tft.println("left");
             }
           }
         }
@@ -162,13 +175,17 @@ void loop() {                 //main
                 selectedDirectory = 1;
               }
               debounceFlag = true;
+              redrawFlag = true;
               lastpress = millis();
-              tft.setCursor(0, 210);
-              tft.println("right");
             }
           }
         }
       }
+    }
+
+    if (redrawFlag) {  //draw ui on demand
+      redrawFlag = false;
+      tft.fillRect(0, 0, tft.width(), heightOffset + triangleOffset, 0);
       //draw right and left buttons
       tft.fillTriangle(lTriangleX, heightOffset, lTriangleX, heightOffset + triangleWidth, lTriangleX - triangleWidth, heightOffset + triangleWidth / 2, ILI9341_WHITE);
       tft.fillTriangle(rTriangleX, heightOffset, rTriangleX, heightOffset + triangleWidth, rTriangleX + triangleWidth, heightOffset + triangleWidth / 2, ILI9341_WHITE);
@@ -176,14 +193,10 @@ void loop() {                 //main
       //draw text
       tft.setTextColor(ILI9341_WHITE);
       tft.setTextSize(textSize);
-      drawCenteredText(folderList[selectedDirectory], 160, heightOffset + triangleWidth / 2);
+      drawCenteredText(folderList[selectedDirectory], 120, heightOffset + triangleWidth / 2);
 
-      tft.setCursor(0, 150);
-      tft.println(x);
-      tft.setCursor(0, 165);
-      tft.println(y);
+      //TODO calculate battery voltage
       //TODO draw battery %
-      //TODO calculate battery viktage
     }
   }
 }
@@ -196,20 +209,15 @@ void drawCenteredText(char* text, int px, int py) {
   tft.println(text);
 }
 
-void loadFrames() {  //loads frames into memory from sdcard
-                     //TODO add loading screen stuff
+void loadFrames() {  //loads frames into memory from sdcard //TODO fix some bug here with going from high to low frame counts results in failure to load more than one frame
+  framesLoaded = 0;
   char path[strBufferSize];
-  strcpy(path, folderList[currentDirectory]);
-  strcat(path, "/");
-  Serial.println("path");
-  Serial.println(path);
-  Serial.println();
-  Serial.println(folderList[currentDirectory]);
-
   ImageReturnCode stat;
   char buffer[strBufferSize + strBufferSize + 10 + 4];
   char frameChar[10];
-  unsigned long framesLoaded;
+
+  strcpy(path, folderList[currentDirectory]);
+  strcat(path, "/");
 
   tft.fillScreen(0);
   Serial.print("Loading: ");
@@ -218,41 +226,55 @@ void loadFrames() {  //loads frames into memory from sdcard
   while (true) {  //keep loading frames if they exist or until no more memory can be allocated
     ltoa(framesLoaded + 1, frameChar, 10);
     strcpy(buffer, path);
-     Serial.println(buffer);
+
     strcat(buffer, frameChar);
     strcat(buffer, extension);
     Serial.print("Frame: ");
     Serial.println(frameChar);
+    reader.bmpDimensions(buffer, &width, &height);
     stat = reader.loadBMP(buffer, img[framesLoaded]);
     reader.printStatus(stat);
     if (stat != 0) {  //anything other than success
+      framesLoaded--;
       break;
     }
     tft.fillScreen(0);
     tft.setTextSize(textSize);
     drawCenteredText(folderList[currentDirectory], 120, 160 - 24);
-    drawCenteredText("loaded:", 120, 160);
-    drawCenteredText(frameChar, 120, 160 + 24);
+    drawCenteredText("loaded frame", 120, 160);
+    drawCenteredText("to RAM:", 120, 160+ 24);
+    drawCenteredText(frameChar, 120, 160 + 48);
     framesLoaded++;
   }
   if (framesLoaded >= maxFramesToLoad) {  //prevent overflow
     framesLoaded = maxFramesToLoad;
   }
-  maxFrames = framesLoaded;
-  //TODO set framerate and Random wait logic somehow by using the directory naming structure
+  tft.fillScreen(0);
+  drawCenteredText("Done", 120, 160);
+  delay(250);
+  tft.fillScreen(0);
+
+  if (folderList[currentDirectory][strlen(folderList[currentDirectory]) - 2] == '-' && folderList[currentDirectory][strlen(folderList[currentDirectory]) - 1] == 'L') {  // if the directory contains -L afterwards it will ignore the delay
+    loopAnimation = true;
+  } else {
+    loopAnimation = false;
+  }
 }
 
-void playFrame() {  //indexes through frame objects
-  img[currentFrame].draw(tft, 0, 0);
-  if (currentFrame >= maxFrames) {
-    currentFrame = 0;
-    if (delayAnimation) {  //sets random delay at end of sequence
-      delayFlag == true;
-      delayTime = random(minDelay, maxDelay);
-      lastDelay = millis();
-    }
+void playFrame() {                                                                                                                                     //indexes through frame objects
+  img[currentFrame].draw(tft, constrain(tft.width() / 2 - (width / 2), 0, tft.width()), constrain(tft.height() / 2 - (height / 2), 0, tft.height()));  //draw in center of display
+  if (currentFrame >= framesLoaded && !loopAnimation && !delayFlag) {
+    delayFlag = true;
+    delayTime = random(minDelay, maxDelay);
+    lastDelay = millis();
+  }
+  if (millis() - lastDelay >= delayTime && delayFlag) {
+    delayFlag = false;
   }
   if (!delayFlag) {  //prevents advance to next frame if delay is in place at end of sequence
     currentFrame++;
+    if (currentFrame > framesLoaded) {
+      currentFrame = 0;
+    }
   }
 }
